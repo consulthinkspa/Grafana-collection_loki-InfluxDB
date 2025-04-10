@@ -41,6 +41,10 @@ Crea una directory di lavoro:
 mkdir -p /home/ubuntu/grafana
 cd /home/ubuntu/grafana
 ```
+Installa dipendenze da Requirements.yml
+```
+ansible-galaxy install -r requirements.yml -p /home/ubuntu/.ansible/collections
+```
 3.2. Esecuzione del Playbook
 Esegui il playbook:
 ```
