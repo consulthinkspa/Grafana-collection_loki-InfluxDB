@@ -1,0 +1,4 @@
+---
+collections:
+  - name: grafana.grafana
+    version: 2.2.3

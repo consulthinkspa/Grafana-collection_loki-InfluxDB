@@ -1,0 +1,167 @@
+- name: Installazioni binarie Grafana, Loki e InfluxDB
+  hosts: localhost
+  become: yes
+  collections:
+    - grafana.grafana
+  tasks:
+    - name: Installa la collection grafana.grafana
+      ansible.builtin.command:
+        cmd: "ansible-galaxy collection install grafana.grafana -p /home/ubuntu/.ansible/collections --force"
+      delegate_to: localhost
+      become: no
+      register: install_result
+      changed_when: "'installed successfully' in install_result.stdout"
+      failed_when: "install_result.rc != 0 or 'installed successfully' not in install_result.stdout"
+
+    - name: Debug installazione collection
+      debug:
+        var: install_result.stdout_lines
+      when: install_result.stdout is defined
+
+    - name: Verifica presenza della collection grafana.grafana
+      ansible.builtin.stat:
+        path: "/home/ubuntu/.ansible/collections/ansible_collections/grafana/grafana/roles/loki"
+      register: loki_role_stat
+      delegate_to: localhost
+      become: no
+
+    - name: Fallisci se la collection non è installata
+      ansible.builtin.fail:
+        msg: "La collection grafana.grafana non è installata correttamente. Esegui 'ansible-galaxy collection install grafana.grafana:2.2.3 -p /home/ubuntu/.ansible/collections --force' manualmente e verifica l'output."
+      when: not loki_role_stat.stat.exists
+
+    - name: Verifica installazione collection
+      ansible.builtin.command:
+        cmd: "ansible-galaxy collection list grafana.grafana"
+      delegate_to: localhost
+      become: no
+      register: list_result
+
+    - name: Debug collection list
+      debug:
+        var: list_result.stdout_lines
+      when: list_result.stdout is defined
+
+    - name: Installa Grafana usando grafana collection
+      ansible.builtin.include_role:
+        name: grafana
+      vars:
+        grafana_install_method: binary
+        grafana_version: "8.5.27"
+        grafana_binary_install_dir: "/usr/local/grafana"
+        grafana_manage_service: true
+        grafana_security:
+          admin_user: "admin"
+          admin_password: "ciao"
+
+    - name: Installa Loki usando grafana collection
+      ansible.builtin.include_role:
+        name: loki
+      vars:
+        loki_install_method: binary
+        loki_version: "3.4.3"
+        loki_binary_install_dir: "/usr/local/bin"
+        loki_manage_service: true
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Installa dipendenze
+      apt:
+        name:
+          - wget
+          - tar
+          - unzip
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Download pacchetto InfluxDB (AMD64)
+      get_url:
+        url: "https://download.influxdata.com/influxdb/releases/influxdb-1.11.8-amd64.deb"
+        dest: "/tmp/influxdb-1.11.8-amd64.deb"
+        mode: '0644'
+
+    - name: Rimuovi directory temporanea esistente
+      file:
+        path: "/tmp/influxdb-deb"
+        state: absent
+
+    - name: Estrai il pacchetto .deb per modificare il preinst script
+      ansible.builtin.command:
+        cmd: "dpkg-deb -x /tmp/influxdb-1.11.8-amd64.deb /tmp/influxdb-deb"
+      args:
+        creates: "/tmp/influxdb-deb"
+
+    - name: Estrai i file di controllo dal pacchetto .deb
+      ansible.builtin.command:
+        cmd: "dpkg-deb --control /tmp/influxdb-1.11.8-amd64.deb /tmp/influxdb-deb/DEBIAN"
+      args:
+        creates: "/tmp/influxdb-deb/DEBIAN"
+
+    - name: Correggi lo script preinst (sostituisci con percorso esplicito)
+      ansible.builtin.replace:
+        path: "/tmp/influxdb-deb/DEBIAN/preinst"
+        regexp: "useradd --system -u -m influxdb -s /bin/false -d \"\\${data_dir}\""
+        replace: "useradd --system -s /bin/false -d /var/lib/influxdb influxdb"
+
+    - name: Debug contenuto dello script preinst
+      ansible.builtin.command:
+        cmd: "cat /tmp/influxdb-deb/DEBIAN/preinst"
+      register: preinst_content
+      changed_when: false
+
+    - name: Mostra contenuto dello script preinst
+      debug:
+        var: preinst_content.stdout_lines
+
+    - name: Rimuovi il vecchio pacchetto .deb ricostruito
+      file:
+        path: "/tmp/influxdb-1.11.8-fixed-amd64.deb"
+        state: absent
+
+    - name: Ricostruisci il pacchetto .deb corretto
+      ansible.builtin.command:
+        cmd: "dpkg-deb -b /tmp/influxdb-deb /tmp/influxdb-1.11.8-fixed-amd64.deb"
+
+    - name: Installa il pacchetto InfluxDB corretto
+      apt:
+        deb: "/tmp/influxdb-1.11.8-fixed-amd64.deb"
+        state: present
+
+    - name: Pulizia file temporanei
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/tmp/influxdb-1.11.8-amd64.deb"
+        - "/tmp/influxdb-1.11.8-fixed-amd64.deb"
+        - "/tmp/influxdb-deb"
+
+    - name: Rimuovi il servizio systemd personalizzato (se esiste)
+      file:
+        path: "/etc/systemd/system/influxdb.service"
+        state: absent
+
+    - name: Ricarica demone systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: Assicurati che il servizio InfluxDB sia configurato
+      systemd:
+        name: influxdb
+        enabled: yes
+        state: started
+
+    - name: Abilita e avvia il servizio Grafana
+      systemd:
+        name: grafana-server
+        enabled: yes
+        state: started
+
+    - name: Abilita e avvia il servizio Loki
+      systemd:
+        name: loki
+        enabled: yes
+        state: started
